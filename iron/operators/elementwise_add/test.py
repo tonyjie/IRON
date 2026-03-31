@@ -39,10 +39,12 @@ extensive_params, extensive_names = generate_test_params(extensive=True)
 # Prefill: size=prompt_len*emb_dim, num_aie_columns=8, num_channels=2, tile_size=2048
 # (input_length, num_aie_columns, num_channels, tile_size)
 llama_params = [
+    # Decode: single token × emb_dim=2048 (1 AIE column, tile_size=2048)
+    (2048, 1, 2, 2048),
     # Prefill: 13 tokens × emb_dim=2048 (size=26624, tile_size=emb_dim=2048)
     (26624, 8, 2, 2048),
 ]
-llama_names = ["llama_prefill_add_13tok"]
+llama_names = ["llama_decode_add", "llama_prefill_add_13tok"]
 llama_extensive_params = [
     # Prefill: 2048 tokens × emb_dim=2048 (size=4194304, tile_size=emb_dim=2048)
     (4194304, 8, 2, 2048),
