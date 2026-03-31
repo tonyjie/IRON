@@ -17,7 +17,11 @@ from iron.common import AIEContext
 def aie_context(request):
     """Create a fresh AIEContext for each test"""
     verbose_mlir = request.config.option.verbose > 0
-    return AIEContext(mlir_verbose=verbose_mlir)
+    ctx = AIEContext(mlir_verbose=verbose_mlir)
+    build_dir = request.config.getoption("--build-dir")
+    if build_dir is not None:
+        ctx.build_dir = Path(build_dir).resolve()
+    return ctx
 
 
 def pytest_addoption(parser):
@@ -31,6 +35,13 @@ def pytest_addoption(parser):
         type=int,
         default=5,
         help="Number of iterations to run each test for statistics",
+    )
+    parser.addoption(
+        "--build-dir",
+        default=None,
+        help="Build directory for compiled artifacts (default: build/). "
+        "Use a separate dir (e.g. build_llama) to avoid cache conflicts "
+        "between tests with different compilation flags.",
     )
 
 
@@ -150,6 +161,9 @@ def pytest_configure(config):
     config._csv_reporter = CSVReporter(csv_path)
     config.addinivalue_line(
         "markers", "metrics(**patterns): specify metric patterns for this test"
+    )
+    config.addinivalue_line(
+        "markers", "llama: mark test as using Llama 3.2 1B realistic configuration"
     )
 
 

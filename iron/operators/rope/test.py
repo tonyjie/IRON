@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from iron.operators.rope.op import AIERope
 from iron.operators.rope.reference import generate_golden_reference
-from iron.common.test_utils import run_test
+from iron.common.test_utils import run_test, report_precision
 
 
 def generate_test_params(extensive=False):
@@ -53,6 +53,39 @@ def generate_test_params(extensive=False):
 regular_params, regular_names = generate_test_params(extensive=False)
 extensive_params, extensive_names = generate_test_params(extensive=True)
 
+# Llama 3.2 1B RoPE configurations
+# head_dim=64, num_heads=32, num_kv_groups=8
+# Decode: single token (angle_rows=1), Prefill: prompt_len tokens
+# (rows, cols, angle_rows, num_aie_columns, method_type)
+llama_params = [
+    # Decode Q: 32 heads, 1 token (angle_rows=1, num_aie_columns=1)
+    (  32, 64,  1, 1, 0),
+    # Decode K: 8 kv_groups, 1 token (angle_rows=1, num_aie_columns=1)
+    (   8, 64,  1, 1, 0),
+    # Prefill Q: 32 heads × 16 tokens = 512 rows
+    # Note: angle_rows must be divisible by num_aie_columns; prompt_len must be a
+    # multiple of 8 for 8 columns. Using prompt_len=16 (smallest valid multiple of 8).
+    ( 512, 64, 16, 8, 0),
+    # Prefill K: 8 kv_groups × 16 tokens = 128 rows
+    ( 128, 64, 16, 8, 0),
+]
+llama_names = [
+    "llama_decode_q_32heads",
+    "llama_decode_k_8kvgroups",
+    "llama_prefill_q_16tok",
+    "llama_prefill_k_16tok",
+]
+llama_extensive_params = [
+    # Prefill Q: 32 heads × 2048 tokens = 65536 rows
+    (65536, 64, 2048, 8, 0),
+    # Prefill K: 8 kv_groups × 2048 tokens = 16384 rows
+    (16384, 64, 2048, 8, 0),
+]
+llama_extensive_names = [
+    "llama_prefill_q_2048tok",
+    "llama_prefill_k_2048tok",
+]
+
 # Combine params with marks - extensive params get pytest.mark.extensive
 all_params = [
     pytest.param(*params, id=name)
@@ -60,12 +93,22 @@ all_params = [
 ] + [
     pytest.param(*params, marks=pytest.mark.extensive, id=name)
     for params, name in zip(extensive_params, extensive_names)
+] + [
+    pytest.param(*params, marks=pytest.mark.llama, id=name)
+    for params, name in zip(llama_params, llama_names)
+] + [
+    pytest.param(*params, marks=[pytest.mark.llama, pytest.mark.extensive], id=name)
+    for params, name in zip(llama_extensive_params, llama_extensive_names)
 ]
 
 
 @pytest.mark.metrics(
     Latency=r"Latency \(us\): (?P<value>[\d\.]+)",
     Bandwidth=r"Effective Bandwidth: (?P<value>[\d\.e\+-]+) GB/s",
+    Correlation=r"corr: (?P<value>[\d\.]+)",
+    MaxError=r"max_err: (?P<value>[\d\.]+)",
+    MeanError=r"mean_err: (?P<value>[\d\.]+)",
+    FailRate4Pct=r"4%-fail: (?P<value>[\d\.]+)%",
 )
 @pytest.mark.parametrize(
     "rows,cols,angle_rows,aie_columns,method_type",
@@ -103,6 +146,8 @@ def test_rope(rows, cols, angle_rows, aie_columns, method_type, aie_context):
     )
 
     print(f"\nLatency (us): {latency_us:.1f}")
-    print(f"Effective Bandwidth: {bandwidth_gbps:.6e} GB/s\n")
+    print(f"Effective Bandwidth: {bandwidth_gbps:.6e} GB/s")
+
+    report_precision(operator, "output", golden_ref["C"].transpose(0, 1).contiguous())
 
     # assert not errors, f"Test failed with errors: {errors}"

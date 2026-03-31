@@ -9,7 +9,7 @@ from pathlib import Path
 
 from iron.operators.rms_norm.op import AIERMSNorm
 from iron.operators.rms_norm.reference import generate_golden_reference
-from iron.common.test_utils import run_test
+from iron.common.test_utils import run_test, report_precision
 
 
 def generate_test_params(extensive=False):
@@ -60,6 +60,21 @@ def generate_test_params(extensive=False):
 regular_params, regular_names = generate_test_params(extensive=False)
 extensive_params, extensive_names = generate_test_params(extensive=True)
 
+# Llama 3.2 1B RMSNorm configurations
+# Decode: size=emb_dim=2048, num_aie_columns=1, num_channels=2, tile_size=2048, weighted=True
+# Prefill: size=prompt_len*emb_dim, num_aie_columns=8, num_channels=2, tile_size=2048, weighted=True
+# (input_length, num_aie_columns, num_channels, tile_size, weighted)
+llama_params = [
+    # Prefill: 13 tokens × emb_dim=2048 (size=26624, tile_size=2048 → 13 tiles per col, 8 cols)
+    (26624, 8, 2, 2048, True),
+]
+llama_names = ["llama_prefill_rms_norm_13tok"]
+llama_extensive_params = [
+    # Prefill: 2048 tokens × emb_dim=2048 (size=4194304, tile_size=2048, 8 cols)
+    (4194304, 8, 2, 2048, True),
+]
+llama_extensive_names = ["llama_prefill_rms_norm_2048tok"]
+
 # Combine params with marks - extensive params get pytest.mark.extensive
 all_params = [
     pytest.param(*params, id=name)
@@ -67,12 +82,22 @@ all_params = [
 ] + [
     pytest.param(*params, marks=pytest.mark.extensive, id=name)
     for params, name in zip(extensive_params, extensive_names)
+] + [
+    pytest.param(*params, marks=pytest.mark.llama, id=name)
+    for params, name in zip(llama_params, llama_names)
+] + [
+    pytest.param(*params, marks=[pytest.mark.llama, pytest.mark.extensive], id=name)
+    for params, name in zip(llama_extensive_params, llama_extensive_names)
 ]
 
 
 @pytest.mark.metrics(
     Latency=r"Latency \(us\): (?P<value>[\d\.]+)",
     Bandwidth=r"Effective Bandwidth: (?P<value>[\d\.e\+-]+) GB/s",
+    Correlation=r"corr: (?P<value>[\d\.]+)",
+    MaxError=r"max_err: (?P<value>[\d\.]+)",
+    MeanError=r"mean_err: (?P<value>[\d\.]+)",
+    FailRate4Pct=r"4%-fail: (?P<value>[\d\.]+)%",
 )
 @pytest.mark.parametrize(
     "input_length,num_aie_columns,num_channels,tile_size,weighted",
@@ -104,6 +129,8 @@ def test_rms_norm(
     )
 
     print(f"\nLatency (us): {latency_us:.1f}")
-    print(f"Effective Bandwidth: {bandwidth_gbps:.6e} GB/s\n")
+    print(f"Effective Bandwidth: {bandwidth_gbps:.6e} GB/s")
+
+    report_precision(operator, "output", golden_ref["output"])
 
     assert not errors, f"Test failed with errors: {errors}"

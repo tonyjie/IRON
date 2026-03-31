@@ -56,7 +56,14 @@ class AIEGEMM(AIEOperatorBase):
             if not use_static_weight
             else torch.zeros((K, N), dtype=torch.bfloat16).T
         )
-        self.static_weight_shape = (K, N)
+        # Store the full weight shape in the layout that _get_B_dims expects.
+        # For b_col_maj, weights are stored as (N, K); for row-major, as (K, N).
+        # This must reflect the FULL N (before partitioning) so that forward()
+        # can correctly compute N_part = N // partition_N.
+        if self.b_col_maj:
+            self.static_weight_shape = (N, K)
+        else:
+            self.static_weight_shape = (K, N)
 
         # The operator's M, K, N represent what the NPU operator supports.
         # Calls to forward() may supply matrices of different sizes, and the
@@ -247,6 +254,7 @@ class AIEGEMM(AIEOperatorBase):
             self.add_buffer(f"C_{i}", self.M * self.N)
             self.add_to_runlist("gemm", "A", f"B_{i}", f"C_{i}")
 
+
     def _get_B_dims(self, B_shape):
         """Extract K and N dimensions from B matrix shape based on layout.
 
@@ -283,7 +291,7 @@ class AIEGEMM(AIEOperatorBase):
             K == K2
             and (M <= self.M or not self.c_col_maj)
             and K <= self.K
-            and N <= self.N
+            and N <= self.N * self.partition_N
         )
         if not applicable:
             raise AIEOperatorConstraintError("AIEGEMM: incompatible tensor shape(s)")
@@ -380,14 +388,16 @@ class AIEGEMM(AIEOperatorBase):
                 B_parts[i] = self._pad_B(B[col_start:col_end, :])
             else:
                 B_parts[i] = self._pad_B(B[:, col_start:col_end])
-        self.static_weight_shape = B_parts[0].shape
         return B_parts
 
     def _execute_aie_operation(self, A_np, B_nps=None):
         """Execute GEMM operation on AIE hardware"""
         M, K = A_np.shape
-        B_shape = B_nps[0].shape if B_nps is not None else self.static_weight_shape
-        K2, N = self._get_B_dims(B_shape)
+        if B_nps is not None:
+            K2, N = self._get_B_dims(B_nps[0].shape)
+        else:
+            # Static weights: use per-partition padded dimensions directly
+            K2, N = self.K, self.N
         C_shape = (N, M) if self.c_col_maj else (M, N)
 
         # Validate dimensions match operator configuration
@@ -403,20 +413,14 @@ class AIEGEMM(AIEOperatorBase):
                     self.M * self.N,
                     static_data=B_np,
                 )
+
         self.run_runlist()
+
         result_nps = [
             self.read_buffer(f"C_{i}", shape=C_shape, dtype=bfloat16)
             for i in range(self.partition_N)
         ]
 
-        # Check for NaN and fail hard
-        # for result_np in result_nps:
-        #     if np.isnan(result_np).any():
-        #         nan_count = np.isnan(result_np).sum()
-        #         total_count = result_np.size
-        #         raise RuntimeError(
-        #             f"AIE execution returned {nan_count}/{total_count} NaN values. "
-        #         )
-
         # Convert back to torch tensor
         return result_nps
+
